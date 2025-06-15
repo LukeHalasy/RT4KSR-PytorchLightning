@@ -56,13 +56,9 @@ def setup_output(video_path, save_path, fps, width, height):
   if not os.path.exists(save_path):
     os.makedirs(save_path)
 
-  video_name = os.path.basename(video_path).replace(config.video_format, "_SR.avi")
+  video_name = os.path.basename(video_path).replace(config.video_format, ".mkv")
   video_sr_path = os.path.join(save_path, video_name)
-  fourcc = (
-    cv2.VideoWriter_fourcc(*"VP80")
-    if config.video_format == ".webm"
-    else cv2.VideoWriter_fourcc(*"XVID")
-  )
+  fourcc = cv2.VideoWriter_fourcc(*"XVID")
 
   return cv2.VideoWriter(video_sr_path, fourcc, fps, (width * config.scale, height * config.scale))
 
