@@ -1,4 +1,6 @@
 import os
+
+import config
 import cv2
 import torch
 from model import LitRT4KSR_Rep
@@ -6,7 +8,6 @@ from torchvision.transforms import functional as TF
 from tqdm import tqdm
 
 from utils import reparameterize, tensor2uint
-import config
 
 model_path = config.checkpoint_path_video_infer
 save_path = config.video_infer_save_path
@@ -63,9 +64,6 @@ def setup_output(video_path, save_path, fps, width, height):
   return cv2.VideoWriter(video_sr_path, fourcc, fps, (width * config.scale, height * config.scale))
 
 
-# Step 1: Add try-except block around GPU operations
-
-
 def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
   min_batch_size = 4  # Set a minimum batch size to avoid infinite loop
   current_batch_size = batch_size
@@ -109,14 +107,11 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
     if i == frame_count - 1 and current_batch_size != batch_size:
       print(f"Finished processing with reduced batch size: {current_batch_size}")
 
-  progress_bar.close()  # Close the progress bar when done
-
 
 import argparse
 
 
 def main():
-  # Argument parser
   parser = argparse.ArgumentParser(description="Process a video with batch size.")
   parser.add_argument("--batch-size", type=int, default=64, help="The size of the batch")
   parser.add_argument("--video-path", type=str, required=True, help="Path to the input video file")
