@@ -8,7 +8,6 @@ from tqdm import tqdm
 from utils import reparameterize, tensor2uint
 import config
 
-
 model_path = config.checkpoint_path_video_infer
 save_path = config.video_infer_save_path
 video_path = config.video_infer_video_path
@@ -89,14 +88,22 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
       frame_buffer.clear()
 
 
+import argparse
+
+
 def main():
+  # Argument parser
+  parser = argparse.ArgumentParser(description="Process a video with batch size.")
+  parser.add_argument("--batch-size", type=int, default=64, help="The size of the batch")
+  args = parser.parse_args()
+
   device = get_device()
   litmodel = load_model(device)
 
   cap, fps, width, height, frame_count = read_video(video_path)
   video_sr = setup_output(video_path, save_path, fps, width, height)
 
-  process_frames(cap, litmodel, device, video_sr, frame_count, batch_size=64)
+  process_frames(cap, litmodel, device, video_sr, frame_count, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":
