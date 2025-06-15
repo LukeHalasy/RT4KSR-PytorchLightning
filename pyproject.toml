@@ -1,0 +1,20 @@
+[project]
+name = "rt4ksr-pytorchlightning"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "~=3.10"
+dependencies = [
+    "gradio>=5.33.1",
+    "matplotlib>=3.10.3",
+    "mcp-server-git>=2025.1.14",
+    "numpy==1.24.4",
+    "opencv-python==4.8.0.74",
+    "pillow==10.0.0",
+    "pytorch-lightning>=2.5.1.post0",
+    "tensorboard>=2.19.0",
+    "torch-summary==1.4.5",
+    "torchvision>=0.22.1",
+    "tqdm==4.65.0",
+    "typing-extensions>=4.14.0",
+]
