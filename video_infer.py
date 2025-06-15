@@ -96,10 +96,11 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
           progress_bar.update(current_batch_size)  # Update the progress bar
         except RuntimeError as e:
           if "CUDA out of memory" in str(e):
+            decrement = 2
             print(
-              f"CUDA out of memory encountered. Reducing batch size from {current_batch_size} to half."
+              f"CUDA out of memory encountered. Reducing batch size of {current_batch_size} by {decrement}."
             )
-            current_batch_size = max(current_batch_size // 2, min_batch_size)
+            current_batch_size = max(current_batch_size - decrement, min_batch_size)
             progress_bar.total -= len(frame_buffer)  # Adjust total frames for next iteration
             break
         else:
