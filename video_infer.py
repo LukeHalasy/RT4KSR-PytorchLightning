@@ -10,7 +10,6 @@ import config
 
 model_path = config.checkpoint_path_video_infer
 save_path = config.video_infer_save_path
-video_path = config.video_infer_video_path
 
 
 def get_device():
@@ -68,24 +67,52 @@ def setup_output(video_path, save_path, fps, width, height):
   return cv2.VideoWriter(video_sr_path, fourcc, fps, (width * config.scale, height * config.scale))
 
 
-def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
-  frame_buffer = []
-  for i in tqdm(range(frame_count)):
-    ret, frame = cap.read()
-    if not ret:
-      break
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_buffer.append(TF.to_tensor(frame / 255.0).unsqueeze(0).float())
+# Step 1: Add try-except block around GPU operations
 
-    if len(frame_buffer) == batch_size or i == frame_count - 1:
-      with torch.no_grad():
-        frames_tensor = torch.cat(frame_buffer).to(device)
-        sr_frames = litmodel.predict_step(frames_tensor)
-        for sr_frame in sr_frames:
-          sr_frame = tensor2uint(sr_frame * 255.0)
-          sr_frame = cv2.cvtColor(sr_frame, cv2.COLOR_RGB2BGR)
-          video_sr.write(sr_frame)
-      frame_buffer.clear()
+
+def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
+  min_batch_size = 4  # Set a minimum batch size to avoid infinite loop
+  current_batch_size = batch_size
+  progress_bar = tqdm(total=frame_count)  # Initialize tqdm with the total number of frames
+
+  while True:
+    frame_buffer = []
+    for i in range(frame_count):
+      ret, frame = cap.read()
+      if not ret:
+        break
+      frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+      frame_buffer.append(TF.to_tensor(frame / 255.0).unsqueeze(0).float())
+
+      if len(frame_buffer) == current_batch_size or i == frame_count - 1:
+        try:
+          with torch.no_grad():
+            frames_tensor = torch.cat(frame_buffer).to(device)
+            sr_frames = litmodel.predict_step(frames_tensor)
+            for sr_frame in sr_frames:
+              sr_frame = tensor2uint(sr_frame * 255.0)
+              sr_frame = cv2.cvtColor(sr_frame, cv2.COLOR_RGB2BGR)
+              video_sr.write(sr_frame)
+          progress_bar.update(current_batch_size)  # Update the progress bar
+        except RuntimeError as e:
+          if "CUDA out of memory" in str(e):
+            print(
+              f"CUDA out of memory encountered. Reducing batch size from {current_batch_size} to half."
+            )
+            current_batch_size = max(current_batch_size // 2, min_batch_size)
+            progress_bar.total -= len(frame_buffer)  # Adjust total frames for next iteration
+            break
+        else:
+          progress_bar.update(
+            len(frame_buffer)
+          )  # Update the progress bar even if not reaching batch size
+          frame_buffer.clear()
+          break
+
+    if i == frame_count - 1 and current_batch_size != batch_size:
+      print(f"Finished processing with reduced batch size: {current_batch_size}")
+
+  progress_bar.close()  # Close the progress bar when done
 
 
 import argparse
@@ -95,13 +122,17 @@ def main():
   # Argument parser
   parser = argparse.ArgumentParser(description="Process a video with batch size.")
   parser.add_argument("--batch-size", type=int, default=64, help="The size of the batch")
+  parser.add_argument("--video-path", type=str, required=True, help="Path to the input video file")
+  parser.add_argument(
+    "--output-path", type=str, required=True, help="Path to save the output video file"
+  )
   args = parser.parse_args()
 
   device = get_device()
   litmodel = load_model(device)
 
-  cap, fps, width, height, frame_count = read_video(video_path)
-  video_sr = setup_output(video_path, save_path, fps, width, height)
+  cap, fps, width, height, frame_count = read_video(args.video_path)
+  video_sr = setup_output(args.video_path, args.output_path, fps, width, height)
 
   process_frames(cap, litmodel, device, video_sr, frame_count, batch_size=args.batch_size)
 
