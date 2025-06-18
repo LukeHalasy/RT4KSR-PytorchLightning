@@ -1,26 +1,24 @@
 import os
-
 import config
 import cv2
 import torch
 from model import LitRT4KSR_Rep
 from torchvision.transforms import functional as TF
 from tqdm import tqdm
-
 from utils import reparameterize, tensor2uint
+import argparse
+
 
 model_path = config.checkpoint_path_video_infer
 save_path = config.video_infer_save_path
 
 
-def get_device():
-  device = (
-    torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if config.device == "auto"
-    else torch.device(config.device)
-  )
-  print(f"Using device: {device}")
-  return device
+def get_available_devices():
+  devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
+  if not devices:
+    devices = [torch.device("cpu")]
+  print(f"Using {len(devices)} GPU(s): {[str(d) for d in devices]}")
+  return devices
 
 
 def load_model(device):
@@ -30,7 +28,7 @@ def load_model(device):
   if config.video_infer_reparameterize:
     litmodel.model = reparameterize(config, litmodel.model, device, save_rep_checkpoint=False)
   litmodel.model.to(device)
-  litmodel.eval()
+  litmodel.model.eval()
   return litmodel
 
 
@@ -64,7 +62,7 @@ def setup_output(video_path, save_path, fps, width, height):
   return cv2.VideoWriter(video_sr_path, fourcc, fps, (width * config.scale, height * config.scale))
 
 
-def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
+def process_frames(cap, litmodels, devices, video_sr, frame_count, batch_size):
   min_batch_size = 4
   current_batch_size = batch_size
   processed_frames = 0
@@ -73,10 +71,9 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
   while processed_frames < frame_count:
     frame_buffer = []
 
-    # Try to load up to current_batch_size frames
     for _ in range(current_batch_size):
       if processed_frames + len(frame_buffer) >= frame_count:
-        break  # prevent reading beyond total
+        break
       ret, frame = cap.read()
       if not ret:
         break
@@ -85,14 +82,23 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
       frame_buffer.append(tensor)
 
     if not frame_buffer:
-      break  # nothing left to process
+      break
 
-    # Retry processing the current buffer if OOM occurs
     while True:
       try:
         with torch.no_grad():
-          frames_tensor = torch.cat(frame_buffer).to(device)
-          sr_frames = litmodel.predict_step(frames_tensor)
+          frames_tensor = torch.cat(frame_buffer)
+
+          # Multi-GPU inference
+          chunks = torch.chunk(frames_tensor, len(devices))
+          sr_chunks = []
+
+          for model, chunk, gpu in zip(litmodels, chunks, devices):
+            chunk = chunk.to(gpu)
+            sr_out = model.model(chunk)
+            sr_chunks.append(sr_out.cpu())
+
+          sr_frames = torch.cat(sr_chunks)
 
           for sr_frame in sr_frames:
             sr_frame = tensor2uint(sr_frame * 255.0)
@@ -100,8 +106,8 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
             video_sr.write(sr_frame)
 
         processed_frames += len(frame_buffer)
-        progress_bar.update(len(frame_buffer))  # ✅ only update here
-        break  # done with this batch
+        progress_bar.update(len(frame_buffer))
+        break
 
       except RuntimeError as e:
         if "CUDA out of memory" in str(e):
@@ -120,9 +126,6 @@ def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
     print(f"Finished processing with reduced batch size: {current_batch_size}")
 
 
-import argparse
-
-
 def main():
   parser = argparse.ArgumentParser(description="Process a video with batch size.")
   parser.add_argument("--batch-size", type=int, default=64, help="The size of the batch")
@@ -132,13 +135,13 @@ def main():
   )
   args = parser.parse_args()
 
-  device = get_device()
-  litmodel = load_model(device)
+  devices = get_available_devices()
+  litmodels = [load_model(device) for device in devices]
 
   cap, fps, width, height, frame_count = read_video(args.video_path)
   video_sr = setup_output(args.video_path, args.output_path, fps, width, height)
 
-  process_frames(cap, litmodel, device, video_sr, frame_count, batch_size=args.batch_size)
+  process_frames(cap, litmodels, devices, video_sr, frame_count, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":
