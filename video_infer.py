@@ -65,47 +65,59 @@ def setup_output(video_path, save_path, fps, width, height):
 
 
 def process_frames(cap, litmodel, device, video_sr, frame_count, batch_size):
-  min_batch_size = 4  # Set a minimum batch size to avoid infinite loop
+  min_batch_size = 4
   current_batch_size = batch_size
-  progress_bar = tqdm(total=frame_count)  # Initialize tqdm with the total number of frames
+  processed_frames = 0
+  progress_bar = tqdm(total=frame_count)
 
-  while True:
+  while processed_frames < frame_count:
     frame_buffer = []
-    for i in range(frame_count):
+
+    # Try to load up to current_batch_size frames
+    for _ in range(current_batch_size):
+      if processed_frames + len(frame_buffer) >= frame_count:
+        break  # prevent reading beyond total
       ret, frame = cap.read()
       if not ret:
         break
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-      frame_buffer.append(TF.to_tensor(frame / 255.0).unsqueeze(0).float())
+      tensor = TF.to_tensor(frame / 255.0).unsqueeze(0).float()
+      frame_buffer.append(tensor)
 
-      if len(frame_buffer) == current_batch_size or i == frame_count - 1:
-        try:
-          with torch.no_grad():
-            frames_tensor = torch.cat(frame_buffer).to(device)
-            sr_frames = litmodel.predict_step(frames_tensor)
-            for sr_frame in sr_frames:
-              sr_frame = tensor2uint(sr_frame * 255.0)
-              sr_frame = cv2.cvtColor(sr_frame, cv2.COLOR_RGB2BGR)
-              video_sr.write(sr_frame)
-          progress_bar.update(current_batch_size)  # Update the progress bar
-        except RuntimeError as e:
-          if "CUDA out of memory" in str(e):
-            decrement = 2
-            print(
-              f"CUDA out of memory encountered. Reducing batch size of {current_batch_size} by {decrement}."
-            )
-            current_batch_size = max(current_batch_size - decrement, min_batch_size)
-            progress_bar.total -= len(frame_buffer)  # Adjust total frames for next iteration
-            break
+    if not frame_buffer:
+      break  # nothing left to process
+
+    # Retry processing the current buffer if OOM occurs
+    while True:
+      try:
+        with torch.no_grad():
+          frames_tensor = torch.cat(frame_buffer).to(device)
+          sr_frames = litmodel.predict_step(frames_tensor)
+
+          for sr_frame in sr_frames:
+            sr_frame = tensor2uint(sr_frame * 255.0)
+            sr_frame = cv2.cvtColor(sr_frame, cv2.COLOR_RGB2BGR)
+            video_sr.write(sr_frame)
+
+        processed_frames += len(frame_buffer)
+        progress_bar.update(len(frame_buffer))  # ✅ only update here
+        break  # done with this batch
+
+      except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+          torch.cuda.empty_cache()
+          print(f"[OOM] Reducing batch size from {current_batch_size}")
+          current_batch_size = max(current_batch_size - 2, min_batch_size)
+
+          if len(frame_buffer) > current_batch_size:
+            frame_buffer = frame_buffer[:current_batch_size]
+          continue
         else:
-          progress_bar.update(
-            len(frame_buffer)
-          )  # Update the progress bar even if not reaching batch size
-          frame_buffer.clear()
-          break
+          raise e
 
-    if i == frame_count - 1 and current_batch_size != batch_size:
-      print(f"Finished processing with reduced batch size: {current_batch_size}")
+  progress_bar.close()
+  if current_batch_size != batch_size:
+    print(f"Finished processing with reduced batch size: {current_batch_size}")
 
 
 import argparse
