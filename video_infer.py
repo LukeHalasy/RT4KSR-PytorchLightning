@@ -1,16 +1,18 @@
 import os
-import config
 import cv2
 import torch
-from model import LitRT4KSR_Rep
-from torchvision.transforms import functional as TF
-from tqdm import tqdm
-from utils import reparameterize, tensor2uint
 import argparse
+import numpy as np
+import av
+
+from tqdm import tqdm
+from torchvision.transforms import functional as TF
+from model import LitRT4KSR_Rep
+from utils import reparameterize, tensor2uint
+import config
 
 
 model_path = config.checkpoint_path_video_infer
-save_path = config.video_infer_save_path
 
 
 def get_available_devices():
@@ -32,98 +34,106 @@ def load_model(device):
   return litmodel
 
 
-def read_video(video_path):
-  cap = cv2.VideoCapture(video_path)
-  fps = cap.get(cv2.CAP_PROP_FPS)
-  width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-  height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-  frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+def process_video(input_path, output_path, litmodels, devices, batch_size):
+  container = av.open(input_path)
+  video_stream = next(s for s in container.streams if s.type == "video")
+  input_audio_streams = [s for s in container.streams if s.type == "audio"]
 
-  if not cap.isOpened():
-    raise ValueError(f"Error opening video file: {video_path}")
+  output = av.open(output_path, mode="w")
+  out_video_stream = output.add_stream("libx264", rate=video_stream.average_rate)
+  out_video_stream.width = video_stream.width * config.scale
+  out_video_stream.height = video_stream.height * config.scale
+  out_video_stream.pix_fmt = "yuv420p"
 
-  print("Video info:")
-  print(f"fps: {fps}")
-  print(f"width: {width}")
-  print(f"height: {height}")
-  print(f"frame_count: {frame_count}")
+  # Map input audio stream index to output stream using codec name
+  output_audio_streams = {}
+  for input_stream in input_audio_streams:
+    codec_name = input_stream.codec.name or "aac"
+    output_stream = output.add_stream(codec_name, rate=input_stream.rate)
+    output_audio_streams[input_stream.index] = output_stream
 
-  return cap, fps, width, height, frame_count
-
-
-def setup_output(video_path, save_path, fps, width, height):
-  if not os.path.exists(save_path):
-    os.makedirs(save_path)
-
-  video_name = os.path.basename(video_path).replace(config.video_format, ".mkv")
-  video_sr_path = os.path.join(save_path, video_name)
-  fourcc = cv2.VideoWriter_fourcc(*"XVID")
-
-  return cv2.VideoWriter(video_sr_path, fourcc, fps, (width * config.scale, height * config.scale))
-
-
-def process_frames(cap, litmodels, devices, video_sr, frame_count, batch_size):
-  min_batch_size = 4
+  buffer = []
   current_batch_size = batch_size
+  min_batch_size = 4
+  frame_count = video_stream.frames
   processed_frames = 0
   progress_bar = tqdm(total=frame_count)
 
-  while processed_frames < frame_count:
-    frame_buffer = []
+  for frame in container.decode(video=0):
+    frame_rgb = frame.to_rgb().to_ndarray()
+    tensor = TF.to_tensor(frame_rgb / 255.0).unsqueeze(0).float()
+    buffer.append(tensor)
 
-    for _ in range(current_batch_size):
-      if processed_frames + len(frame_buffer) >= frame_count:
-        break
-      ret, frame = cap.read()
-      if not ret:
-        break
-      frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-      tensor = TF.to_tensor(frame / 255.0).unsqueeze(0).float()
-      frame_buffer.append(tensor)
+    if len(buffer) >= current_batch_size:
+      while True:
+        try:
+          with torch.no_grad():
+            frames_tensor = torch.cat(buffer)
 
-    if not frame_buffer:
-      break
+            chunks = torch.chunk(frames_tensor, len(devices))
+            sr_chunks = []
 
-    while True:
-      try:
-        with torch.no_grad():
-          frames_tensor = torch.cat(frame_buffer)
+            for model, chunk, gpu in zip(litmodels, chunks, devices):
+              chunk = chunk.to(gpu)
+              sr_out = model.model(chunk)
+              sr_chunks.append(sr_out.cpu())
 
-          # Multi-GPU inference
-          chunks = torch.chunk(frames_tensor, len(devices))
-          sr_chunks = []
+            sr_frames = torch.cat(sr_chunks)
 
-          for model, chunk, gpu in zip(litmodels, chunks, devices):
-            chunk = chunk.to(gpu)
-            sr_out = model.model(chunk)
-            sr_chunks.append(sr_out.cpu())
+            for sr_frame in sr_frames:
+              sr_img = tensor2uint(sr_frame * 255.0)
+              video_frame = av.VideoFrame.from_ndarray(sr_img, format="rgb24")
+              for packet in out_video_stream.encode(video_frame):
+                output.mux(packet)
 
-          sr_frames = torch.cat(sr_chunks)
+          processed_frames += len(buffer)
+          progress_bar.update(len(buffer))
+          buffer = []
+          break
 
-          for sr_frame in sr_frames:
-            sr_frame = tensor2uint(sr_frame * 255.0)
-            sr_frame = cv2.cvtColor(sr_frame, cv2.COLOR_RGB2BGR)
-            video_sr.write(sr_frame)
+        except RuntimeError as e:
+          if "CUDA out of memory" in str(e):
+            torch.cuda.empty_cache()
+            print(f"[OOM] Reducing batch size from {current_batch_size}")
+            current_batch_size = max(current_batch_size // 2, min_batch_size)
+            buffer = buffer[:current_batch_size]
+            continue
+          else:
+            raise e
 
-        processed_frames += len(frame_buffer)
-        progress_bar.update(len(frame_buffer))
-        break
+  if buffer:
+    with torch.no_grad():
+      frames_tensor = torch.cat(buffer)
+      chunks = torch.chunk(frames_tensor, len(devices))
+      sr_chunks = []
 
-      except RuntimeError as e:
-        if "CUDA out of memory" in str(e):
-          torch.cuda.empty_cache()
-          print(f"[OOM] Reducing batch size from {current_batch_size}")
-          current_batch_size = max(current_batch_size - 2, min_batch_size)
+      for model, chunk, gpu in zip(litmodels, chunks, devices):
+        chunk = chunk.to(gpu)
+        sr_out = model.model(chunk)
+        sr_chunks.append(sr_out.cpu())
 
-          if len(frame_buffer) > current_batch_size:
-            frame_buffer = frame_buffer[:current_batch_size]
-          continue
-        else:
-          raise e
+      sr_frames = torch.cat(sr_chunks)
+      for sr_frame in sr_frames:
+        sr_img = tensor2uint(sr_frame * 255.0)
+        video_frame = av.VideoFrame.from_ndarray(sr_img, format="rgb24")
+        for packet in out_video_stream.encode(video_frame):
+          output.mux(packet)
+
+  for packet in out_video_stream.encode():
+    output.mux(packet)
+
+  # Copy audio packets from original file into output
+  container.seek(0)
+  for packet in container.demux(input_audio_streams):
+    if packet.dts is None:
+      continue
+    if packet.stream.index in output_audio_streams:
+      packet.stream = output_audio_streams[packet.stream.index]
+      output.mux(packet)
 
   progress_bar.close()
-  if current_batch_size != batch_size:
-    print(f"Finished processing with reduced batch size: {current_batch_size}")
+  output.close()
+  container.close()
 
 
 def main():
@@ -138,10 +148,7 @@ def main():
   devices = get_available_devices()
   litmodels = [load_model(device) for device in devices]
 
-  cap, fps, width, height, frame_count = read_video(args.video_path)
-  video_sr = setup_output(args.video_path, args.output_path, fps, width, height)
-
-  process_frames(cap, litmodels, devices, video_sr, frame_count, batch_size=args.batch_size)
+  process_video(args.video_path, args.output_path, litmodels, devices, args.batch_size)
 
 
 if __name__ == "__main__":
