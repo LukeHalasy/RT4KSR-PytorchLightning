@@ -52,12 +52,22 @@ def process_video(input_path, output_path, litmodels, devices, batch_size):
     output_stream = output.add_stream(codec_name, rate=input_stream.rate)
     output_audio_streams[input_stream.index] = output_stream
 
+  out_audio_stream = output.add_stream_from_template(container.streams.audio[0])
+
   buffer = []
   current_batch_size = batch_size
   min_batch_size = 4
   frame_count = video_stream.frames
   processed_frames = 0
   progress_bar = tqdm(total=frame_count)
+
+  # Copy audio packets from original file into output
+  for packet in container.demux(input_audio_streams):
+    if packet.dts is None:
+      continue
+    output.mux(packet)
+
+  container.seek(0)
 
   for frame in container.decode(video=0):
     frame_rgb = frame.to_rgb().to_ndarray()
@@ -121,15 +131,6 @@ def process_video(input_path, output_path, litmodels, devices, batch_size):
 
   for packet in out_video_stream.encode():
     output.mux(packet)
-
-  # Copy audio packets from original file into output
-  container.seek(0)
-  for packet in container.demux(input_audio_streams):
-    if packet.dts is None:
-      continue
-    if packet.stream.index in output_audio_streams:
-      packet.stream = output_audio_streams[packet.stream.index]
-      output.mux(packet)
 
   progress_bar.close()
   output.close()
