@@ -14,9 +14,61 @@ dependencies = [
     "pillow==10.0.0",
     "pynvml>=12.0.0",
     "pytorch-lightning>=2.5.1.post0",
+    "ruff>=0.11.13",
     "tensorboard>=2.19.0",
     "torch-summary==1.4.5",
     "torchvision>=0.22.1",
     "tqdm==4.65.0",
     "typing-extensions>=4.14.0",
 ]
+
+[tool.ruff]
+# Habilitar reglas específicas de linting
+select = [
+  "E", # pycodestyle errors
+  "F", # pyflakes
+  "I", # isort
+  "W", # pycodestyle warnings
+  "N", # pep8-naming
+  "B", # flake8-bugbear
+]
+
+# Ignorar algunas reglas
+ignore = [
+  "E501", # líneas demasiado largas
+  "E402", # importaciones al principio del archivo
+]
+
+# Permitir fijar versiones en comentarios
+fix = true
+
+# Configuración de indentación
+indent-width = 2
+
+# Línea máxima de longitud
+line-length = 100
+
+# Extensiones de archivos Python a incluir
+include = ["*.py", "*.pyi"]
+
+# Excluir determinados archivos o directorios
+exclude = [
+  ".git",
+  ".ruff_cache",
+  "__pycache__",
+  "*.pyc",
+  "*.egg-info",
+  "venv",
+  "input",
+  "*.mp4",
+  "*.png",
+  "*.jpg",
+  ".cache",
+  "output",
+  "modeltraining",
+  ".venv",
+]
+
+[tool.ruff.isort]
+known-first-party = ["main", "cli", "utils"]
+
