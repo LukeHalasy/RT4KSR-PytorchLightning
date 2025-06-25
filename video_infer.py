@@ -12,9 +12,6 @@ from utils import reparameterize, tensor2uint
 import config
 
 
-model_path = config.checkpoint_path_video_infer
-
-
 def get_available_devices():
   devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
   if not devices:
@@ -23,7 +20,7 @@ def get_available_devices():
   return devices
 
 
-def load_model(device):
+def load_model(device, model_path):
   litmodel = LitRT4KSR_Rep.load_from_checkpoint(
     checkpoint_path=model_path, config=config, map_location=device
   )
@@ -140,6 +137,12 @@ def process_video(input_path, output_path, litmodels, devices, batch_size):
 def main():
   parser = argparse.ArgumentParser(description="Process a video with batch size.")
   parser.add_argument("--batch-size", type=int, default=64, help="The size of the batch")
+  parser.add_argument(
+    "--model-path",
+    type=str,
+    default=config.checkpoint_path_video_infer,
+    help="Path to the model checkpoint",
+  )
   parser.add_argument("--video-path", type=str, required=True, help="Path to the input video file")
   parser.add_argument(
     "--output-path", type=str, required=True, help="Path to save the output video file"
@@ -147,7 +150,7 @@ def main():
   args = parser.parse_args()
 
   devices = get_available_devices()
-  litmodels = [load_model(device) for device in devices]
+  litmodels = [load_model(device, args.model_path) for device in devices]
 
   process_video(args.video_path, args.output_path, litmodels, devices, args.batch_size)
 
