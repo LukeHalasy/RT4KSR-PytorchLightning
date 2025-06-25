@@ -1,15 +1,18 @@
-import os
-import cv2
-import torch
 import argparse
-import numpy as np
-import av
+import glob
+import os
 
-from tqdm import tqdm
+import av
+import cv2
+import numpy as np
+import torch
 from torchvision.transforms import functional as TF
-from model import LitRT4KSR_Rep
-from utils import reparameterize, tensor2uint
+from tqdm import tqdm
+import model
+
 import config
+from model import RT4KSR_Rep
+from utils import reparameterize, tensor2uint
 
 
 def get_available_devices():
@@ -21,7 +24,7 @@ def get_available_devices():
 
 
 def load_model(device, model_path):
-  litmodel = LitRT4KSR_Rep.load_from_checkpoint(
+  litmodel = RT4KSR_Rep.load_from_checkpoint(
     checkpoint_path=model_path, config=config, map_location=device
   )
   if config.video_infer_reparameterize:
@@ -29,6 +32,26 @@ def load_model(device, model_path):
   litmodel.model.to(device)
   litmodel.model.eval()
   return litmodel
+
+
+def load_checkpoint_RT4SKR_EDUARD(model, device, checkpoint_path):
+  checkpoint = torch.load(checkpoint_path, map_location=device)
+  model.load_state_dict(checkpoint["state_dict"], strict=True)
+  return model
+
+
+def load_model_RT4SKR_EDUARD_VERSION(device, checkpoint_path):
+  net = torch.nn.DataParallel(model.__dict__["rt4ksr_rep"](config)).to(device)
+  net = load_checkpoint_RT4SKR_EDUARD(net, device, checkpoint_path)
+
+  """
+  if config.video_infer_reparameterize:
+    rep_model = reparameterize(config, model, device, save_rep_checkpoint=False)
+    net = rep_model
+  """
+
+  net.eval()
+  return net
 
 
 def process_video(input_path, output_path, litmodels, devices, batch_size, scale):
@@ -82,7 +105,7 @@ def process_video(input_path, output_path, litmodels, devices, batch_size, scale
 
             for model, chunk, gpu in zip(litmodels, chunks, devices):
               chunk = chunk.to(gpu)
-              sr_out = model.model(chunk)
+              sr_out = model(chunk)
               sr_chunks.append(sr_out.cpu())
 
             sr_frames = torch.cat(sr_chunks)
@@ -154,8 +177,16 @@ def main():
   )
   args = parser.parse_args()
 
+  config.scale = args.scale  # this is a hack
+  config.checkpoint_path_video_infer = args.model_path
+
   devices = get_available_devices()
-  litmodels = [load_model(device, args.model_path) for device in devices]
+  # temporary
+  # TODO: UNDO if we want multiple gpus to work again. will require work to get it to work
+  # with using the models from EDUARD's repo
+  devices = [devices[0]]
+
+  litmodels = [load_model_RT4SKR_EDUARD_VERSION(device, args.model_path) for device in devices]
 
   process_video(args.video_path, args.output_path, litmodels, devices, args.batch_size, args.scale)
 
