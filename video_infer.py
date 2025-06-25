@@ -125,6 +125,9 @@ def process_video(input_path, output_path, litmodels, devices, batch_size, scale
           if "CUDA out of memory" in str(e):
             torch.cuda.empty_cache()
             print(f"[OOM] Reducing batch size from {current_batch_size}")
+            print(
+              "Once you see these errors stop and progress begin RESTART this process with the batch size that doesn't hit memory issues"
+            )  # a better patch would be to be able to deal with these errors without losing the initial frames
             current_batch_size = max(current_batch_size // 2, min_batch_size)
             buffer = buffer[:current_batch_size]
             continue
