@@ -31,15 +31,15 @@ def load_model(device, model_path):
   return litmodel
 
 
-def process_video(input_path, output_path, litmodels, devices, batch_size):
+def process_video(input_path, output_path, litmodels, devices, batch_size, scale):
   container = av.open(input_path)
   video_stream = next(s for s in container.streams if s.type == "video")
   input_audio_streams = [s for s in container.streams if s.type == "audio"]
 
   output = av.open(output_path, mode="w")
   out_video_stream = output.add_stream("libx264", rate=video_stream.average_rate)
-  out_video_stream.width = video_stream.width * config.scale
-  out_video_stream.height = video_stream.height * config.scale
+  out_video_stream.width = video_stream.width * scale
+  out_video_stream.height = video_stream.height * scale
   out_video_stream.pix_fmt = "yuv420p"
 
   # Map input audio stream index to output stream using codec name
@@ -143,6 +143,11 @@ def main():
     default=config.checkpoint_path_video_infer,
     help="Path to the model checkpoint",
   )
+  parser.add_argument(
+    "--scale",
+    type=int,
+    default=config.scale,
+  )
   parser.add_argument("--video-path", type=str, required=True, help="Path to the input video file")
   parser.add_argument(
     "--output-path", type=str, required=True, help="Path to save the output video file"
@@ -152,7 +157,7 @@ def main():
   devices = get_available_devices()
   litmodels = [load_model(device, args.model_path) for device in devices]
 
-  process_video(args.video_path, args.output_path, litmodels, devices, args.batch_size)
+  process_video(args.video_path, args.output_path, litmodels, devices, args.batch_size, args.scale)
 
 
 if __name__ == "__main__":
