@@ -20,7 +20,6 @@ def get_available_devices():
   devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
   if not devices:
     devices = [torch.device("cpu")]
-  print(f"Using {len(devices)} GPU(s): {[str(d) for d in devices]}")
   return devices
 
 
@@ -42,7 +41,7 @@ def load_checkpoint_RT4SKR_EDUARD(model, device, checkpoint_path):
 
 
 def load_model_RT4SKR_EDUARD_VERSION(device, checkpoint_path):
-  net = torch.nn.DataParallel(model.__dict__["rt4ksr_rep"](config)).to(device)
+  net = torch.nn.DataParallel(model.__dict__["rt4ksr_rep"](config), device_ids=[0]).to(device)
   net = load_checkpoint_RT4SKR_EDUARD(net, device, checkpoint_path)
 
   """
@@ -114,7 +113,8 @@ def process_video(input_path, output_path, litmodels, devices, batch_size, scale
             for sr_frame in sr_frames:
               sr_img = tensor2uint(sr_frame * 255.0)
               video_frame = av.VideoFrame.from_ndarray(sr_img, format="rgb24")
-              for packet in out_video_stream.encode(video_frame):
+              packets = out_video_stream.encode(video_frame)
+              for packet in packets:
                 output.mux(packet)
 
           processed_frames += len(buffer)
